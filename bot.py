@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = '8347775737:AAFSFwXxse-7c3SsOu4JSTN7jSfdYh4vJa4'
+BOT_TOKEN = '8350781961:AAFeF6CJBxLxefKyg0fEVWxleSav_7oUJHU'
 GROQ_KEY = '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'
 ADMIN_ID = 5298604296  # Твой ID
 CHANNEL_ID = '-1001888094511'
