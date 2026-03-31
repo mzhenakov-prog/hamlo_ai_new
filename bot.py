@@ -11,7 +11,7 @@ GROQ_KEY = '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'
 ADMIN_ID = 5298604296  # Твой ID
 CHANNEL_ID = '-1001888094511'
 CHANNEL_URL = 'https://t.me/lyubimkatt'
-BOT_USERNAME = 'hamlo_ham_bot'  # Username твоего бота
+BOT_USERNAME = 'hamlo_ham_bot'
 
 bot = telebot.TeleBot(BOT_TOKEN)
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -77,7 +77,7 @@ def is_subscribed(user_id):
 
 # ========== РЕЖИМЫ ==========
 MODES = {
-    "хамло": """Ты — ХАМЛО. Грубый, саркастичный AI-помощник.
+    "хамlo": """Ты — ХАМЛО. Грубый, саркастичный AI-помощник.
 Отвечай коротко (1 предложение), с матом и сарказмом.
 Используй слова: блять, нахуй, мудак, идиот, тупой.
 Никогда не извиняйся. Унижай за нытьё и тупые вопросы.""",
@@ -138,7 +138,6 @@ def start(message):
     uid = message.from_user.id
     uname = message.from_user.username or "unknown"
     
-    # Реферальный код
     args = message.text.split()
     ref_code = None
     if len(args) > 1:
@@ -146,17 +145,11 @@ def start(message):
     
     add_user(uid, uname, ref_code)
     
-    # Проверка подписки
     if not is_subscribed(uid):
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("📢 Подписаться на канал", url=CHANNEL_URL))
         markup.add(types.InlineKeyboardButton("✅ Я подписался", callback_data="check_sub"))
-        bot.send_message(
-            message.chat.id,
-            "⚠️ *Доступ к боту закрыт!*\n\nПодпишись на канал, чтобы пользоваться ХАМЛО.",
-            reply_markup=markup,
-            parse_mode='Markdown'
-        )
+        bot.send_message(message.chat.id, "⚠️ *Доступ к боту закрыт!*\n\nПодпишись на канал, чтобы пользоваться ХАМЛО.", reply_markup=markup, parse_mode='Markdown')
         return
     
     if uid not in user_mode:
@@ -166,8 +159,7 @@ def start(message):
     user_stats[uid] += 1
     
     is_admin = (uid == ADMIN_ID)
-    bot.send_message(message.chat.id, "🤬 *ХАМЛО готов унижать!*\n\nВыбери режим кнопками.", 
-                     reply_markup=main_menu(is_admin), parse_mode='Markdown')
+    bot.send_message(message.chat.id, "🤬 *ХАМЛО готов унижать!*\n\nВыбери режим кнопками.", reply_markup=main_menu(is_admin), parse_mode='Markdown')
 
 @bot.message_handler(func=lambda msg: msg.text == "🤬 Хамло")
 def set_hamlo(message):
@@ -181,8 +173,7 @@ def set_hamlo(message):
     
     user_mode[uid] = "хамло"
     is_admin = (uid == ADMIN_ID)
-    bot.send_message(message.chat.id, "✅ *Режим ХАМЛО* включен!", 
-                     reply_markup=main_menu(is_admin), parse_mode='Markdown')
+    bot.send_message(message.chat.id, "✅ *Режим ХАМЛО* включен!", reply_markup=main_menu(is_admin), parse_mode='Markdown')
 
 @bot.message_handler(func=lambda msg: msg.text == "💬 Чат 5")
 def set_chat5(message):
@@ -196,8 +187,7 @@ def set_chat5(message):
     
     user_mode[uid] = "чат5"
     is_admin = (uid == ADMIN_ID)
-    bot.send_message(message.chat.id, "✅ *Режим ЧАТ 5* включен!", 
-                     reply_markup=main_menu(is_admin), parse_mode='Markdown')
+    bot.send_message(message.chat.id, "✅ *Режим ЧАТ 5* включен!", reply_markup=main_menu(is_admin), parse_mode='Markdown')
 
 @bot.message_handler(func=lambda msg: msg.text == "📊 Статистика")
 def stats(message):
@@ -212,8 +202,7 @@ def stats(message):
     mode = user_mode.get(uid, "хамло")
     total = user_stats.get(uid, 0)
     is_admin = (uid == ADMIN_ID)
-    bot.send_message(message.chat.id, f"📊 *Статистика*\nРежим: {mode.upper()}\nСообщений: {total}", 
-                     reply_markup=main_menu(is_admin), parse_mode='Markdown')
+    bot.send_message(message.chat.id, f"📊 *Статистика*\nРежим: {mode.upper()}\nСообщений: {total}", reply_markup=main_menu(is_admin), parse_mode='Markdown')
 
 @bot.message_handler(func=lambda msg: msg.text == "🗑 Очистить")
 def clear(message):
@@ -226,8 +215,7 @@ def clear(message):
         return
     
     is_admin = (uid == ADMIN_ID)
-    bot.send_message(message.chat.id, "🗑 История стерта.", 
-                     reply_markup=main_menu(is_admin), parse_mode='Markdown')
+    bot.send_message(message.chat.id, "🗑 История стерта.", reply_markup=main_menu(is_admin), parse_mode='Markdown')
 
 @bot.message_handler(func=lambda msg: msg.text == "🔗 Рефералка")
 def ref_cmd(message):
@@ -258,15 +246,12 @@ def help_cmd(message):
 *Кнопки:*
 📊 Статистика — счётчик
 🗑 Очистить — забыть диалог"""
-
     if is_admin:
         help_text += "\n\n🔗 *Рефералка* — создавай ссылки для рекламы"
-    
     help_text += "\n\n@avgustc"
-    
     bot.send_message(message.chat.id, help_text, reply_markup=main_menu(is_admin), parse_mode='Markdown')
 
-@bot.message_handler(func=lambda msg: msg.text not in ["🤬 Хамlo", "💬 Чат 5", "📊 Статистика", "🗑 Очистить", "🔗 Рефералка", "❓ Помощь"])
+@bot.message_handler(func=lambda msg: msg.text not in ["🤬 Хамло", "💬 Чат 5", "📊 Статистика", "🗑 Очистить", "🔗 Рефералка", "❓ Помощь"])
 def handle_message(message):
     uid = message.from_user.id
     
@@ -300,19 +285,10 @@ def handle_message(message):
 def check_callback(call):
     if is_subscribed(call.from_user.id):
         bot.answer_callback_query(call.id, "✅ Подписка подтверждена!")
-        bot.edit_message_text(
-            "🎉 Спасибо за подписку! Теперь ты можешь пользоваться ботом.",
-            call.message.chat.id,
-            call.message.message_id
-        )
+        bot.edit_message_text("🎉 Спасибо за подписку! Теперь ты можешь пользоваться ботом.", call.message.chat.id, call.message.message_id)
         uid = call.from_user.id
         is_admin = (uid == ADMIN_ID)
-        bot.send_message(
-            call.message.chat.id,
-            "🤬 *ХАМЛО готов унижать!*",
-            reply_markup=main_menu(is_admin),
-            parse_mode='Markdown'
-        )
+        bot.send_message(call.message.chat.id, "🤬 *ХАМЛО готов унижать!*", reply_markup=main_menu(is_admin), parse_mode='Markdown')
     else:
         bot.answer_callback_query(call.id, "❌ Вы ещё не подписаны!", show_alert=True)
 
