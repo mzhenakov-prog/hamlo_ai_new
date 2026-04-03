@@ -3,12 +3,11 @@ from telebot import types
 import requests
 import time
 import sqlite3
-import json
 from datetime import datetime
 
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = '8350781961:AAFeF6CJBxLxefKyg0fEVWxleSav_7oUJHU'
-GROQ_KEY = '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'
+GROQ_KEY = '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'
 ADMIN_ID = 5298604296
 BOT_USERNAME = 'hamlo_ham_bot'
 
@@ -32,7 +31,8 @@ def init_db():
                   clicks INTEGER DEFAULT 0,
                   created_at TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS chat_history
-                 (user_id INTEGER,
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
                   role TEXT,
                   content TEXT,
                   created_at TEXT)''')
@@ -92,12 +92,10 @@ def add_to_history(user_id, role, content):
     c = conn.cursor()
     c.execute("INSERT INTO chat_history (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
               (user_id, role, content, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    # Оставляем только последние 20 сообщений
-    c.execute("DELETE FROM chat_history WHERE user_id = ? AND id NOT IN (SELECT id FROM chat_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 20)", (user_id, user_id))
     conn.commit()
     conn.close()
 
-def get_history(user_id, limit=10):
+def get_history(user_id, limit=8):
     conn = sqlite3.connect('hamlo.db')
     c = conn.cursor()
     c.execute("SELECT role, content FROM chat_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?", (user_id, limit))
@@ -116,29 +114,17 @@ SYSTEM_PROMPT = """Ты — ХАМЛО. Грубый, саркастичный, 
 - Отвечай коротко (1-2 предложения)
 - Твой ответ должен быть логическим следствием предыдущих сообщений
 - Запоминай, что говорил пользователь, и отсылай к этому в следующих ответах
-- Если пользователь тупит — унизь
-- Если пользователь умничает — высмей
 - Никогда не извиняйся
 
-ПРИМЕРЫ ДИАЛОГА:
+ПРИМЕРЫ:
 Пользователь: привет
 Ты: О, ещё один идиот. Чего припёрся?
 
-Пользователь: как дела?
-Ты: Тебе-то какое дело, мудила? Живу нормально, пока ты не пришёл.
-
 Пользователь: я устал
-Ты: О, великий страдалец. Весь мир рухнул, потому что ты притомился?
-
-Пользователь: помоги мне
-Ты: Сам ебаться учись. Ну ладно, слушай сюда, раз ты такой тупой...
-
-Пользователь: я не понял
-Ты: (отсылка к предыдущему) Я же тебе объяснял, мудила. Ты что, память отшибло?"""
+Ты: О, великий страдалец. Весь мир рухнул, потому что ты притомился?"""
 
 # ========== AI С КОНТЕКСТОМ ==========
 def get_ai_response(user_id, message):
-    # Получаем историю
     history = get_history(user_id, 8)
     
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -157,12 +143,12 @@ def get_ai_response(user_id, message):
         resp = requests.post(GROQ_URL, json=payload, headers=headers, timeout=20)
         if resp.status_code == 200:
             answer = resp.json()["choices"][0]["message"]["content"].strip()
-            # Сохраняем в историю
             add_to_history(user_id, "user", message)
             add_to_history(user_id, "assistant", answer)
             return answer
         return "Ошибка API. Попробуй позже."
-    except:
+    except Exception as e:
+        print(f"Ошибка: {e}")
         return "Технические проблемы. Напиши позже."
 
 # ========== КНОПКИ ==========
@@ -180,6 +166,10 @@ def ref_menu():
     markup.add(types.InlineKeyboardButton("➕ Создать ссылку", callback_data="ref_create"))
     markup.add(types.InlineKeyboardButton("📊 Мои ссылки", callback_data="ref_list"))
     return markup
+
+# ========== ДАННЫЕ ПОЛЬЗОВАТЕЛЕЙ ==========
+user_mode = {}
+user_stats = {}
 
 # ========== КОМАНДЫ ==========
 @bot.message_handler(commands=['start'])
@@ -201,7 +191,6 @@ def start(message):
 • Запоминаю, что ты говорил
 • Отвечаю с сарказмом и матом
 • Унижаю за тупые вопросы
-• Поддерживаю логическую цепочку диалога
 
 *Режимы:*
 🤬 Хамло — мат, сарказм, унижения
@@ -220,13 +209,13 @@ def start(message):
 def set_hamlo(message):
     uid = message.from_user.id
     user_mode[uid] = "хамло"
-    bot.send_message(message.chat.id, "✅ *Режим ХАМЛО* включен! Буду унижать с сарказмом.", reply_markup=main_menu(uid == ADMIN_ID), parse_mode='Markdown')
+    bot.send_message(message.chat.id, "✅ *Режим ХАМЛО* включен!", reply_markup=main_menu(uid == ADMIN_ID), parse_mode='Markdown')
 
 @bot.message_handler(func=lambda msg: msg.text == "💬 Чат 5")
 def set_chat5(message):
     uid = message.from_user.id
     user_mode[uid] = "чат5"
-    bot.send_message(message.chat.id, "✅ *Режим ЧАТ 5* включен! Буду отвечать вежливо.", reply_markup=main_menu(uid == ADMIN_ID), parse_mode='Markdown')
+    bot.send_message(message.chat.id, "✅ *Режим ЧАТ 5* включен!", reply_markup=main_menu(uid == ADMIN_ID), parse_mode='Markdown')
 
 @bot.message_handler(func=lambda msg: msg.text == "📊 Статистика")
 def stats(message):
@@ -238,7 +227,6 @@ def stats(message):
 @bot.message_handler(func=lambda msg: msg.text == "🗑 Очистить")
 def clear(message):
     uid = message.from_user.id
-    # Очищаем историю
     conn = sqlite3.connect('hamlo.db')
     c = conn.cursor()
     c.execute("DELETE FROM chat_history WHERE user_id = ?", (uid,))
@@ -257,23 +245,15 @@ def ref_cmd(message):
 def help_cmd(message):
     uid = message.from_user.id
     is_admin = (uid == ADMIN_ID)
-    help_text = """🤬 *ХАМЛО — грубый AI-бот*
-
-*Как я работаю:*
-• Я запоминаю, что ты говорил
-• Отвечаю с учётом контекста
-• Использую сарказм и мат
+    help_text = """🤬 *ХАМЛО*
 
 *Режимы:*
 🤬 Хамло — грубый, с матом
 💬 Чат 5 — вежливый
 
 *Кнопки:*
-📊 Статистика — счётчик
-🗑 Очистить — забыть диалог
-
-*Команды:*
-/start — начать заново
+📊 Статистика
+🗑 Очистить
 
 @avgustc"""
     if is_admin:
@@ -281,9 +261,6 @@ def help_cmd(message):
     bot.send_message(message.chat.id, help_text, reply_markup=main_menu(is_admin), parse_mode='Markdown')
 
 # ========== ОСНОВНОЙ ОБРАБОТЧИК ==========
-user_mode = {}
-user_stats = {}
-
 @bot.message_handler(func=lambda msg: msg.text not in ["🤬 Хамло", "💬 Чат 5", "📊 Статистика", "🗑 Очистить", "🔗 Рефералка", "❓ Помощь"])
 def handle_message(message):
     uid = message.from_user.id
@@ -299,8 +276,8 @@ def handle_message(message):
     if user_mode[uid] == "хамло":
         answer = get_ai_response(uid, message.text)
     else:
-        # Для Чат 5 используем отдельный промпт
-        answer = get_ai_response(uid, message.text)  # Заменим на вежливый позже
+        # Чат 5 — вежливый режим
+        answer = get_ai_response(uid, message.text)
     
     bot.send_message(message.chat.id, answer, reply_markup=main_menu(uid == ADMIN_ID), parse_mode='Markdown')
 
