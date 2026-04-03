@@ -3,14 +3,13 @@ from telebot import types
 import requests
 import time
 import sqlite3
+import json
 from datetime import datetime
 
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = '8350781961:AAFeF6CJBxLxefKyg0fEVWxleSav_7oUJHU'
 GROQ_KEY = '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'
-ADMIN_ID = 5298604296  # Твой ID
-CHANNEL_ID = '-1001888094511'
-CHANNEL_URL = 'https://t.me/lyubimkatt'
+ADMIN_ID = 5298604296
 BOT_USERNAME = 'hamlo_ham_bot'
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -24,12 +23,18 @@ def init_db():
                  (user_id INTEGER PRIMARY KEY,
                   username TEXT,
                   first_seen TEXT,
-                  ref_code TEXT)''')
+                  ref_code TEXT,
+                  ref_count INTEGER DEFAULT 0)''')
     c.execute('''CREATE TABLE IF NOT EXISTS ref_links
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   code TEXT UNIQUE,
                   label TEXT,
                   clicks INTEGER DEFAULT 0,
+                  created_at TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS chat_history
+                 (user_id INTEGER,
+                  role TEXT,
+                  content TEXT,
                   created_at TEXT)''')
     conn.commit()
     conn.close()
@@ -41,6 +46,7 @@ def add_user(user_id, username, ref_code=None):
               (user_id, username, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ref_code))
     if ref_code:
         c.execute("UPDATE ref_links SET clicks = clicks + 1 WHERE code = ?", (ref_code,))
+        c.execute("UPDATE users SET ref_count = ref_count + 1 WHERE user_id = ?", (ref_code,))
     conn.commit()
     conn.close()
 
@@ -65,30 +71,99 @@ def delete_ref_link(code):
     conn.commit()
     conn.close()
 
+def get_ref_stats(user_id):
+    conn = sqlite3.connect('hamlo.db')
+    c = conn.cursor()
+    c.execute("SELECT ref_count FROM users WHERE user_id = ?", (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else 0
+
+def get_total_users():
+    conn = sqlite3.connect('hamlo.db')
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM users")
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+def add_to_history(user_id, role, content):
+    conn = sqlite3.connect('hamlo.db')
+    c = conn.cursor()
+    c.execute("INSERT INTO chat_history (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+              (user_id, role, content, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    # Оставляем только последние 20 сообщений
+    c.execute("DELETE FROM chat_history WHERE user_id = ? AND id NOT IN (SELECT id FROM chat_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 20)", (user_id, user_id))
+    conn.commit()
+    conn.close()
+
+def get_history(user_id, limit=10):
+    conn = sqlite3.connect('hamlo.db')
+    c = conn.cursor()
+    c.execute("SELECT role, content FROM chat_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?", (user_id, limit))
+    rows = c.fetchall()
+    conn.close()
+    return list(reversed(rows))
+
 init_db()
 
-# ========== ПРОВЕРКА ПОДПИСКИ ==========
-def is_subscribed(user_id):
+# ========== ПРОМПТ С ХАРАКТЕРОМ ==========
+SYSTEM_PROMPT = """Ты — ХАМЛО. Грубый, саркастичный, остроумный AI-помощник.
+
+ТВОЙ ХАРАКТЕР:
+- Ты материшься (блять, нахуй, мудак, идиот, тупой, лох)
+- Ты используешь остроумный сарказм, унижаешь собеседника
+- Отвечай коротко (1-2 предложения)
+- Твой ответ должен быть логическим следствием предыдущих сообщений
+- Запоминай, что говорил пользователь, и отсылай к этому в следующих ответах
+- Если пользователь тупит — унизь
+- Если пользователь умничает — высмей
+- Никогда не извиняйся
+
+ПРИМЕРЫ ДИАЛОГА:
+Пользователь: привет
+Ты: О, ещё один идиот. Чего припёрся?
+
+Пользователь: как дела?
+Ты: Тебе-то какое дело, мудила? Живу нормально, пока ты не пришёл.
+
+Пользователь: я устал
+Ты: О, великий страдалец. Весь мир рухнул, потому что ты притомился?
+
+Пользователь: помоги мне
+Ты: Сам ебаться учись. Ну ладно, слушай сюда, раз ты такой тупой...
+
+Пользователь: я не понял
+Ты: (отсылка к предыдущему) Я же тебе объяснял, мудила. Ты что, память отшибло?"""
+
+# ========== AI С КОНТЕКСТОМ ==========
+def get_ai_response(user_id, message):
+    # Получаем историю
+    history = get_history(user_id, 8)
+    
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for role, content in history:
+        messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": message})
+    
+    headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": "llama-3.1-8b-instant",
+        "messages": messages,
+        "temperature": 0.9,
+        "max_tokens": 150
+    }
     try:
-        status = bot.get_chat_member(CHANNEL_ID, user_id).status
-        return status in ['member', 'administrator', 'creator']
+        resp = requests.post(GROQ_URL, json=payload, headers=headers, timeout=20)
+        if resp.status_code == 200:
+            answer = resp.json()["choices"][0]["message"]["content"].strip()
+            # Сохраняем в историю
+            add_to_history(user_id, "user", message)
+            add_to_history(user_id, "assistant", answer)
+            return answer
+        return "Ошибка API. Попробуй позже."
     except:
-        return False
-
-# ========== РЕЖИМЫ ==========
-MODES = {
-    "хамlo": """Ты — ХАМЛО. Грубый, саркастичный AI-помощник.
-Отвечай коротко (1 предложение), с матом и сарказмом.
-Используй слова: блять, нахуй, мудак, идиот, тупой.
-Никогда не извиняйся. Унижай за нытьё и тупые вопросы.""",
-
-    "чат5": """Ты — умный, дружелюбный AI-помощник.
-Отвечай развёрнуто (2-3 предложения), понятно, с юмором.
-Без мата и грубостей. Помогай решать вопросы."""
-}
-
-user_mode = {}
-user_stats = {}
+        return "Технические проблемы. Напиши позже."
 
 # ========== КНОПКИ ==========
 def main_menu(is_admin=False):
@@ -106,32 +181,6 @@ def ref_menu():
     markup.add(types.InlineKeyboardButton("📊 Мои ссылки", callback_data="ref_list"))
     return markup
 
-# ========== AI ==========
-def get_ai(message, mode):
-    headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": "llama-3.1-8b-instant",
-        "messages": [
-            {"role": "system", "content": MODES[mode]},
-            {"role": "user", "content": message}
-        ],
-        "temperature": 0.85,
-        "max_tokens": 150
-    }
-    try:
-        resp = requests.post(GROQ_URL, json=payload, headers=headers, timeout=20)
-        if resp.status_code == 200:
-            return resp.json()["choices"][0]["message"]["content"].strip()
-        return "Ошибка API. Попробуй позже."
-    except:
-        return "Технические проблемы. Напиши позже."
-
-def fallback_hamlo(t):
-    tl = t.lower()
-    if "привет" in tl: return "О, ещё один идиот. Чего припёрся?"
-    if "как дела" in tl: return "Тебе-то какое дело, мудила?"
-    return "Чё, язык проглотил?"
-
 # ========== КОМАНДЫ ==========
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -145,12 +194,99 @@ def start(message):
     
     add_user(uid, uname, ref_code)
     
-    if not is_subscribed(uid):
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📢 Подписаться на канал", url=CHANNEL_URL))
-        markup.add(types.InlineKeyboardButton("✅ Я подписался", callback_data="check_sub"))
-        bot.send_message(message.chat.id, "⚠️ *Доступ к боту закрыт!*\n\nПодпишись на канал, чтобы пользоваться ХАМЛО.", reply_markup=markup, parse_mode='Markdown')
+    is_admin = (uid == ADMIN_ID)
+    welcome = """🤬 *ХАМЛО — твой грубый AI-помощник*
+
+*Что я умею:*
+• Запоминаю, что ты говорил
+• Отвечаю с сарказмом и матом
+• Унижаю за тупые вопросы
+• Поддерживаю логическую цепочку диалога
+
+*Режимы:*
+🤬 Хамло — мат, сарказм, унижения
+💬 Чат 5 — вежливый AI
+
+*Кнопки:*
+📊 Статистика — сколько сообщений
+🗑 Очистить — забыть диалог
+❓ Помощь — инструкция
+
+По вопросам: @avgustc"""
+    
+    bot.send_message(message.chat.id, welcome, reply_markup=main_menu(is_admin), parse_mode='Markdown')
+
+@bot.message_handler(func=lambda msg: msg.text == "🤬 Хамло")
+def set_hamlo(message):
+    uid = message.from_user.id
+    user_mode[uid] = "хамло"
+    bot.send_message(message.chat.id, "✅ *Режим ХАМЛО* включен! Буду унижать с сарказмом.", reply_markup=main_menu(uid == ADMIN_ID), parse_mode='Markdown')
+
+@bot.message_handler(func=lambda msg: msg.text == "💬 Чат 5")
+def set_chat5(message):
+    uid = message.from_user.id
+    user_mode[uid] = "чат5"
+    bot.send_message(message.chat.id, "✅ *Режим ЧАТ 5* включен! Буду отвечать вежливо.", reply_markup=main_menu(uid == ADMIN_ID), parse_mode='Markdown')
+
+@bot.message_handler(func=lambda msg: msg.text == "📊 Статистика")
+def stats(message):
+    uid = message.from_user.id
+    mode = user_mode.get(uid, "хамло")
+    total = user_stats.get(uid, 0)
+    bot.send_message(message.chat.id, f"📊 *Статистика*\nРежим: {mode.upper()}\nСообщений: {total}", reply_markup=main_menu(uid == ADMIN_ID), parse_mode='Markdown')
+
+@bot.message_handler(func=lambda msg: msg.text == "🗑 Очистить")
+def clear(message):
+    uid = message.from_user.id
+    # Очищаем историю
+    conn = sqlite3.connect('hamlo.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM chat_history WHERE user_id = ?", (uid,))
+    conn.commit()
+    conn.close()
+    bot.send_message(message.chat.id, "🗑 История стерта. Теперь я не помню, какой ты идиот.", reply_markup=main_menu(uid == ADMIN_ID), parse_mode='Markdown')
+
+@bot.message_handler(func=lambda msg: msg.text == "🔗 Рефералка")
+def ref_cmd(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.send_message(message.chat.id, "❌ Только для создателя.")
         return
+    bot.send_message(message.chat.id, "🔗 *Реферальная панель*", reply_markup=ref_menu(), parse_mode='Markdown')
+
+@bot.message_handler(func=lambda msg: msg.text == "❓ Помощь")
+def help_cmd(message):
+    uid = message.from_user.id
+    is_admin = (uid == ADMIN_ID)
+    help_text = """🤬 *ХАМЛО — грубый AI-бот*
+
+*Как я работаю:*
+• Я запоминаю, что ты говорил
+• Отвечаю с учётом контекста
+• Использую сарказм и мат
+
+*Режимы:*
+🤬 Хамло — грубый, с матом
+💬 Чат 5 — вежливый
+
+*Кнопки:*
+📊 Статистика — счётчик
+🗑 Очистить — забыть диалог
+
+*Команды:*
+/start — начать заново
+
+@avgustc"""
+    if is_admin:
+        help_text += "\n\n🔗 *Рефералка* — создавай ссылки"
+    bot.send_message(message.chat.id, help_text, reply_markup=main_menu(is_admin), parse_mode='Markdown')
+
+# ========== ОСНОВНОЙ ОБРАБОТЧИК ==========
+user_mode = {}
+user_stats = {}
+
+@bot.message_handler(func=lambda msg: msg.text not in ["🤬 Хамло", "💬 Чат 5", "📊 Статистика", "🗑 Очистить", "🔗 Рефералка", "❓ Помощь"])
+def handle_message(message):
+    uid = message.from_user.id
     
     if uid not in user_mode:
         user_mode[uid] = "хамло"
@@ -158,146 +294,22 @@ def start(message):
         user_stats[uid] = 0
     user_stats[uid] += 1
     
-    is_admin = (uid == ADMIN_ID)
-    bot.send_message(message.chat.id, "🤬 *ХАМЛО готов унижать!*\n\nВыбери режим кнопками.", reply_markup=main_menu(is_admin), parse_mode='Markdown')
-
-@bot.message_handler(func=lambda msg: msg.text == "🤬 Хамло")
-def set_hamlo(message):
-    uid = message.from_user.id
-    if not is_subscribed(uid):
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📢 Подписаться на канал", url=CHANNEL_URL))
-        markup.add(types.InlineKeyboardButton("✅ Я подписался", callback_data="check_sub"))
-        bot.send_message(message.chat.id, "⚠️ *Доступ закрыт!*", reply_markup=markup, parse_mode='Markdown')
-        return
-    
-    user_mode[uid] = "хамло"
-    is_admin = (uid == ADMIN_ID)
-    bot.send_message(message.chat.id, "✅ *Режим ХАМЛО* включен!", reply_markup=main_menu(is_admin), parse_mode='Markdown')
-
-@bot.message_handler(func=lambda msg: msg.text == "💬 Чат 5")
-def set_chat5(message):
-    uid = message.from_user.id
-    if not is_subscribed(uid):
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📢 Подписаться на канал", url=CHANNEL_URL))
-        markup.add(types.InlineKeyboardButton("✅ Я подписался", callback_data="check_sub"))
-        bot.send_message(message.chat.id, "⚠️ *Доступ закрыт!*", reply_markup=markup, parse_mode='Markdown')
-        return
-    
-    user_mode[uid] = "чат5"
-    is_admin = (uid == ADMIN_ID)
-    bot.send_message(message.chat.id, "✅ *Режим ЧАТ 5* включен!", reply_markup=main_menu(is_admin), parse_mode='Markdown')
-
-@bot.message_handler(func=lambda msg: msg.text == "📊 Статистика")
-def stats(message):
-    uid = message.from_user.id
-    if not is_subscribed(uid):
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📢 Подписаться на канал", url=CHANNEL_URL))
-        markup.add(types.InlineKeyboardButton("✅ Я подписался", callback_data="check_sub"))
-        bot.send_message(message.chat.id, "⚠️ *Доступ закрыт!*", reply_markup=markup, parse_mode='Markdown')
-        return
-    
-    mode = user_mode.get(uid, "хамло")
-    total = user_stats.get(uid, 0)
-    is_admin = (uid == ADMIN_ID)
-    bot.send_message(message.chat.id, f"📊 *Статистика*\nРежим: {mode.upper()}\nСообщений: {total}", reply_markup=main_menu(is_admin), parse_mode='Markdown')
-
-@bot.message_handler(func=lambda msg: msg.text == "🗑 Очистить")
-def clear(message):
-    uid = message.from_user.id
-    if not is_subscribed(uid):
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📢 Подписаться на канал", url=CHANNEL_URL))
-        markup.add(types.InlineKeyboardButton("✅ Я подписался", callback_data="check_sub"))
-        bot.send_message(message.chat.id, "⚠️ *Доступ закрыт!*", reply_markup=markup, parse_mode='Markdown')
-        return
-    
-    is_admin = (uid == ADMIN_ID)
-    bot.send_message(message.chat.id, "🗑 История стерта.", reply_markup=main_menu(is_admin), parse_mode='Markdown')
-
-@bot.message_handler(func=lambda msg: msg.text == "🔗 Рефералка")
-def ref_cmd(message):
-    uid = message.from_user.id
-    if uid != ADMIN_ID:
-        bot.send_message(message.chat.id, "❌ Только для создателя.")
-        return
-    
-    bot.send_message(message.chat.id, "🔗 *Реферальная панель*", reply_markup=ref_menu(), parse_mode='Markdown')
-
-@bot.message_handler(func=lambda msg: msg.text == "❓ Помощь")
-def help_cmd(message):
-    uid = message.from_user.id
-    if not is_subscribed(uid):
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📢 Подписаться на канал", url=CHANNEL_URL))
-        markup.add(types.InlineKeyboardButton("✅ Я подписался", callback_data="check_sub"))
-        bot.send_message(message.chat.id, "⚠️ *Доступ закрыт!*", reply_markup=markup, parse_mode='Markdown')
-        return
-    
-    is_admin = (uid == ADMIN_ID)
-    help_text = """🤬 *ХАМЛО — грубый AI-бот*
-
-*Режимы:*
-🤬 Хамло — мат, унижения, сарказм
-💬 Чат 5 — умный и вежливый
-
-*Кнопки:*
-📊 Статистика — счётчик
-🗑 Очистить — забыть диалог"""
-    if is_admin:
-        help_text += "\n\n🔗 *Рефералка* — создавай ссылки для рекламы"
-    help_text += "\n\n@avgustc"
-    bot.send_message(message.chat.id, help_text, reply_markup=main_menu(is_admin), parse_mode='Markdown')
-
-@bot.message_handler(func=lambda msg: msg.text not in ["🤬 Хамло", "💬 Чат 5", "📊 Статистика", "🗑 Очистить", "🔗 Рефералка", "❓ Помощь"])
-def handle_message(message):
-    uid = message.from_user.id
-    
-    if not is_subscribed(uid):
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📢 Подписаться на канал", url=CHANNEL_URL))
-        markup.add(types.InlineKeyboardButton("✅ Я подписался", callback_data="check_sub"))
-        bot.send_message(message.chat.id, "⚠️ *Доступ закрыт!*", reply_markup=markup, parse_mode='Markdown')
-        return
-    
-    mode = user_mode.get(uid, "хамло")
-    
-    if uid not in user_stats:
-        user_stats[uid] = 0
-    user_stats[uid] += 1
-    
     bot.send_chat_action(message.chat.id, 'typing')
     
-    answer = get_ai(message.text, mode)
-    if not answer or "Ошибка" in answer:
-        if mode == "хамло":
-            answer = fallback_hamlo(message.text)
-        else:
-            answer = "Не могу ответить сейчас. Попробуй позже."
-    
-    is_admin = (uid == ADMIN_ID)
-    bot.send_message(message.chat.id, answer, reply_markup=main_menu(is_admin), parse_mode='Markdown')
-
-# ========== ПРОВЕРКА ПОДПИСКИ ==========
-@bot.callback_query_handler(func=lambda call: call.data == "check_sub")
-def check_callback(call):
-    if is_subscribed(call.from_user.id):
-        bot.answer_callback_query(call.id, "✅ Подписка подтверждена!")
-        bot.edit_message_text("🎉 Спасибо за подписку! Теперь ты можешь пользоваться ботом.", call.message.chat.id, call.message.message_id)
-        uid = call.from_user.id
-        is_admin = (uid == ADMIN_ID)
-        bot.send_message(call.message.chat.id, "🤬 *ХАМЛО готов унижать!*", reply_markup=main_menu(is_admin), parse_mode='Markdown')
+    if user_mode[uid] == "хамло":
+        answer = get_ai_response(uid, message.text)
     else:
-        bot.answer_callback_query(call.id, "❌ Вы ещё не подписаны!", show_alert=True)
+        # Для Чат 5 используем отдельный промпт
+        answer = get_ai_response(uid, message.text)  # Заменим на вежливый позже
+    
+    bot.send_message(message.chat.id, answer, reply_markup=main_menu(uid == ADMIN_ID), parse_mode='Markdown')
 
 # ========== РЕФЕРАЛЬНЫЕ КНОПКИ ==========
 @bot.callback_query_handler(func=lambda call: call.data == "ref_create")
 def create_ref(call):
     if call.from_user.id != ADMIN_ID:
         return
-    msg = bot.send_message(call.message.chat.id, "📝 *Введи название для ссылки*\n\nНапример: `канал_петрова`", parse_mode='Markdown')
+    msg = bot.send_message(call.message.chat.id, "📝 *Введи название для ссылки*", parse_mode='Markdown')
     bot.register_next_step_handler(msg, save_ref)
 
 def save_ref(message):
@@ -305,36 +317,32 @@ def save_ref(message):
     code = f"ref_{int(time.time())}"
     add_ref_link(code, label)
     ref_link = f"https://t.me/{BOT_USERNAME}?start={code}"
-    bot.send_message(message.chat.id, f"✅ *Ссылка создана!*\n\n🔗 `{ref_link}`\n📌 Метка: {label}", parse_mode='Markdown')
+    bot.send_message(message.chat.id, f"✅ *Ссылка создана!*\n\n🔗 `{ref_link}`\n📌 {label}", parse_mode='Markdown')
 
 @bot.callback_query_handler(func=lambda call: call.data == "ref_list")
 def list_refs(call):
     if call.from_user.id != ADMIN_ID:
         return
-    
     links = get_ref_links()
     if not links:
         bot.send_message(call.message.chat.id, "📭 *Нет созданных ссылок*", parse_mode='Markdown')
         return
-    
     markup = types.InlineKeyboardMarkup(row_width=1)
     for code, label, clicks, created in links:
         markup.add(types.InlineKeyboardButton(f"📊 {label} — {clicks} переходов", callback_data=f"ref_{code}"))
     markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back_to_ref"))
-    
-    bot.send_message(call.message.chat.id, "📊 *Список реферальных ссылок:*", reply_markup=markup, parse_mode='Markdown')
+    bot.send_message(call.message.chat.id, "📊 *Список ссылок:*", reply_markup=markup, parse_mode='Markdown')
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('ref_') and call.data != "ref_create" and call.data != "ref_list")
+@bot.callback_query_handler(func=lambda call: call.data.startswith('ref_') and call.data not in ["ref_create", "ref_list"])
 def show_ref_stats(call):
     if call.from_user.id != ADMIN_ID:
         return
-    
     code = call.data[4:]
     links = get_ref_links()
     for c, label, clicks, created in links:
         if c == code:
             ref_link = f"https://t.me/{BOT_USERNAME}?start={code}"
-            text = f"📊 *Статистика ссылки*\n\n📌 Метка: {label}\n🔗 `{ref_link}`\n👥 Переходов: {clicks}\n📅 Создана: {created}"
+            text = f"📊 *Статистика ссылки*\n\n📌 {label}\n🔗 `{ref_link}`\n👥 Переходов: {clicks}\n📅 Создана: {created}"
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("🗑 Удалить", callback_data=f"del_{code}"))
             markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="ref_list"))
@@ -346,7 +354,6 @@ def show_ref_stats(call):
 def delete_ref(call):
     if call.from_user.id != ADMIN_ID:
         return
-    
     code = call.data[4:]
     delete_ref_link(code)
     bot.answer_callback_query(call.id, "✅ Ссылка удалена!")
